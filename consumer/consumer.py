@@ -21,8 +21,9 @@ from config.config import (
     CONSUMER_MAX_POLL_RECORDS,
     CONSUMER_SESSION_TIMEOUT_MS,
     CONSUMER_HEARTBEAT_INTERVAL_MS,
-    TOPIC_PREFIX,
-    NUM_PARTITIONS,
+    CONSUMER_FETCH_MIN_BYTES,
+    CONSUMER_FETCH_MAX_BYTES,
+    TOPIC_NAME,
     MAX_RETRIES,
     RETRY_DELAY,
     DEAD_LETTER_TOPIC,
@@ -46,12 +47,9 @@ critical_alerts = Counter('rig_critical_alerts_total', 'Total number of critical
 
 class RigDataConsumer:
     def __init__(self):
-        # Create topics list
-        self.topics = [f"{TOPIC_PREFIX}-{i:02d}" for i in range(NUM_PARTITIONS)]
-        
         # Create consumer
         self.consumer = KafkaConsumer(
-            *self.topics,
+            TOPIC_NAME,
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             security_protocol=KAFKA_SECURITY_PROTOCOL,
             sasl_mechanism=KAFKA_SASL_MECHANISM,
@@ -62,7 +60,9 @@ class RigDataConsumer:
             enable_auto_commit=CONSUMER_ENABLE_AUTO_COMMIT,
             max_poll_records=CONSUMER_MAX_POLL_RECORDS,
             session_timeout_ms=CONSUMER_SESSION_TIMEOUT_MS,
-            heartbeat_interval_ms=CONSUMER_HEARTBEAT_INTERVAL_MS
+            heartbeat_interval_ms=CONSUMER_HEARTBEAT_INTERVAL_MS,
+            fetch_min_bytes=CONSUMER_FETCH_MIN_BYTES,
+            fetch_max_bytes=CONSUMER_FETCH_MAX_BYTES
         )
         
         # Thread pool for parallel message processing
