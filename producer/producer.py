@@ -1,12 +1,18 @@
 """
 Kafka producer for publishing rig data to Azure Event Hubs.
 """
-import time
+import json
 import logging
-from typing import List
+import time
+import sys
+import os
+from typing import List, Dict, Any
 from kafka import KafkaProducer
 from concurrent.futures import ThreadPoolExecutor
 from prometheus_client import Counter, Histogram, start_http_server
+
+# Add the project root cleardirectory to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.config import (
     KAFKA_BOOTSTRAP_SERVERS,
@@ -29,7 +35,7 @@ from config.config import (
     TOPIC_NAME,
     PRODUCER_THREAD_POOL_SIZE
 )
-from producer.rig_simulator import RigSimulator
+from rig_simulator import RigSimulator  # Changed from producer.rig_simulator to direct import
 
 # Configure logging with more detail
 logging.basicConfig(
@@ -44,8 +50,12 @@ message_size = Histogram('rig_message_size_bytes', 'Size of messages in bytes')
 send_latency = Histogram('rig_send_latency_seconds', 'Message send latency in seconds')
 
 class RigDataProducer:
-    def __init__(self):
+    def __init__(self, start_rig=0, end_rig=NUM_RIGS):
         logger.info(f"Connecting to Kafka at {KAFKA_BOOTSTRAP_SERVERS}")
+        logger.info(f"Simulating rigs from {start_rig} to {end_rig-1} ({end_rig-start_rig} total)")
+        logger.info(f"Each rig sends 1 message every {MESSAGE_INTERVAL} seconds")
+        logger.info(f"Expected message rate: {(end_rig-start_rig)/MESSAGE_INTERVAL:.1f} messages per second")
+        
         try:
             self.producer = KafkaProducer(
                 bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
@@ -66,21 +76,18 @@ class RigDataProducer:
                 request_timeout_ms=120000,  # 2-minute request timeout
                 connections_max_idle_ms=540000,  # 9 minutes
                 reconnect_backoff_ms=1000,
-                reconnect_backoff_max_ms=10000,
-                socket_timeout_ms=60000,  # 1 minute socket timeout
-                socket_keepalive=True,
-                socket_keepalive_interval_ms=30000  # 30 seconds
+                reconnect_backoff_max_ms=10000
             )
             logger.info("Kafka producer initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Kafka producer: {str(e)}")
             raise
         
-        # Create rig simulators
-        self.rigs = [RigSimulator(f"RIG_{i:03d}") for i in range(NUM_RIGS)]
+        # Create only the rig simulators for this instance's range
+        self.rigs = [RigSimulator(f"RIG_{i:03d}") for i in range(start_rig, end_rig)]
         
         # Thread pool for parallel message sending
-        self.executor = ThreadPoolExecutor(max_workers=PRODUCER_THREAD_POOL_SIZE)
+        self.executor = ThreadPoolExecutor(max_workers=min(PRODUCER_THREAD_POOL_SIZE, len(self.rigs)))
         
     def send_message(self, rig_id: str, message: str) -> None:
         """Send a message to the Event Hub with partition key."""
@@ -146,7 +153,33 @@ class RigDataProducer:
             logger.error(f"Error closing producer: {str(e)}")
 
 def main():
-    producer = RigDataProducer()
+    # Support command-line arguments to specify which subset of rigs to handle
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Run rig data producer')
+    parser.add_argument('--instance', type=int, default=0, help='Producer instance number')
+    parser.add_argument('--instances', type=int, default=1, help='Total number of producer instances')
+    args = parser.parse_args()
+    
+    # Calculate which rigs this instance should handle
+    instance_num = args.instance
+    total_instances = args.instances
+    
+    if total_instances < 1 or instance_num >= total_instances:
+        logger.error(f"Invalid instance configuration: instance={instance_num}, instances={total_instances}")
+        return
+    
+    # Log producer instance information
+    logger.info(f"Starting producer instance {instance_num+1} of {total_instances}")
+    
+    # Calculate rig range for this instance
+    rigs_per_instance = NUM_RIGS // total_instances
+    start_rig = instance_num * rigs_per_instance
+    end_rig = (instance_num + 1) * rigs_per_instance if instance_num < total_instances - 1 else NUM_RIGS
+    logger.info(f"This instance will handle rigs {start_rig} to {end_rig-1} ({end_rig-start_rig} rigs)")
+    
+    # Start the producer with the specified rig range
+    producer = RigDataProducer(start_rig=start_rig, end_rig=end_rig)
     try:
         producer.start()
     except KeyboardInterrupt:
@@ -155,4 +188,4 @@ def main():
         producer.close()
 
 if __name__ == "__main__":
-    main() 
+    main()

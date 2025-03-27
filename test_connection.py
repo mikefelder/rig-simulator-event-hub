@@ -1,33 +1,49 @@
 from kafka import KafkaProducer
-import os
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
-
-# Get connection details
-bootstrap_servers = f"{os.getenv('EVENT_HUB_NAMESPACE')}:9093"
-connection_string = os.getenv('EVENT_HUB_CONNECTION_STRING')
-
-print(f"Connecting to: {bootstrap_servers}")
-
-# Create producer
-producer = KafkaProducer(
-    bootstrap_servers=bootstrap_servers,
-    security_protocol="SASL_SSL",
-    sasl_mechanism="PLAIN",
-    sasl_plain_username="$ConnectionString",
-    sasl_plain_password=connection_string,
-    ssl_check_hostname=True,
-    api_version=(1, 0, 0)
+import json
+import time
+from config.config import (
+    KAFKA_BOOTSTRAP_SERVERS,
+    KAFKA_SECURITY_PROTOCOL,
+    KAFKA_SASL_MECHANISM,
+    KAFKA_SASL_USERNAME,
+    KAFKA_SASL_PASSWORD,
+    KAFKA_SSL_CHECK_HOSTNAME,
+    KAFKA_API_VERSION,
+    TOPIC_NAME
 )
 
-# Try to send a test message
-try:
-    future = producer.send('test-topic', b'test message')
-    future.get(timeout=10)
-    print("Successfully sent test message!")
-except Exception as e:
-    print(f"Error: {str(e)}")
-finally:
-    producer.close() 
+def test_connection():
+    print(f"Attempting to connect to Kafka at {KAFKA_BOOTSTRAP_SERVERS}")
+    
+    try:
+        # Create producer with minimal configuration
+        producer = KafkaProducer(
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            security_protocol=KAFKA_SECURITY_PROTOCOL,
+            sasl_mechanism=KAFKA_SASL_MECHANISM,
+            sasl_plain_username=KAFKA_SASL_USERNAME,
+            sasl_plain_password=KAFKA_SASL_PASSWORD,
+            ssl_check_hostname=KAFKA_SSL_CHECK_HOSTNAME,
+            api_version=KAFKA_API_VERSION,
+            request_timeout_ms=30000
+        )
+        
+        print("Successfully created Kafka producer")
+        
+        # Send a test message
+        test_message = {"test": "message", "timestamp": time.time()}
+        future = producer.send(TOPIC_NAME, json.dumps(test_message).encode('utf-8'))
+        future.get(timeout=10)
+        
+        print("Successfully sent test message")
+        
+        # Close the producer
+        producer.close()
+        print("Successfully closed producer")
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    test_connection() 

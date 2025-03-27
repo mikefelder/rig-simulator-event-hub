@@ -10,7 +10,7 @@ EVENT_HUB_NAME = os.getenv('EVENT_HUB_NAME')
 EVENT_HUB_CONNECTION_STRING = os.getenv('EVENT_HUB_CONNECTION_STRING')
 
 # Kafka Configuration
-KAFKA_BOOTSTRAP_SERVERS = f"{EVENT_HUB_NAMESPACE}:9093"  # Namespace already includes full domain
+KAFKA_BOOTSTRAP_SERVERS = f"{EVENT_HUB_NAMESPACE}.servicebus.windows.net:9093"  # Full domain name required
 KAFKA_SECURITY_PROTOCOL = "SASL_SSL"
 KAFKA_SASL_MECHANISM = "PLAIN"
 KAFKA_SASL_USERNAME = "$ConnectionString"
@@ -43,8 +43,8 @@ PROMETHEUS_PORT = 9090
 METRICS_UPDATE_INTERVAL = 1  # seconds
 
 # Rig Simulation Configuration
-NUM_RIGS = 200
-MESSAGE_INTERVAL = 0.002  # Reduced to 2ms to achieve ~500 messages/second
+NUM_RIGS = 200  # Set to exactly 200 rigs
+MESSAGE_INTERVAL = 1.0  # Set to 1 second
 NUM_KEY_VALUE_PAIRS = 1000
 MIN_MESSAGE_SIZE = 2048  # bytes
 
@@ -61,4 +61,4 @@ DEAD_LETTER_TOPIC = "rig-data-dlq"
 # Performance Tuning
 MAX_CONCURRENT_CONSUMERS = 16  # Increased for better parallel processing
 CONSUMER_THREAD_POOL_SIZE = 32  # Increased thread pool size
-PRODUCER_THREAD_POOL_SIZE = 16  # Increased thread pool size 
+PRODUCER_THREAD_POOL_SIZE = 200  # Ensure enough threads for all rigs

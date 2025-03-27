@@ -4,10 +4,15 @@ Kafka consumer for processing rig data from Azure Event Hubs.
 import json
 import logging
 import time
+import sys
+import os
 from typing import Dict, Any
 from kafka import KafkaConsumer
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
 from concurrent.futures import ThreadPoolExecutor
+
+# Add the project root directory to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.config import (
     KAFKA_BOOTSTRAP_SERVERS,
@@ -28,7 +33,8 @@ from config.config import (
     RETRY_DELAY,
     DEAD_LETTER_TOPIC,
     MAX_CONCURRENT_CONSUMERS,
-    CONSUMER_THREAD_POOL_SIZE
+    CONSUMER_THREAD_POOL_SIZE,
+    EVENT_HUB_CONNECTION_STRING
 )
 
 # Configure logging
@@ -42,8 +48,29 @@ logger = logging.getLogger(__name__)
 messages_processed = Counter('rig_messages_processed_total', 'Total number of messages processed')
 processing_latency = Histogram('rig_processing_latency_seconds', 'Message processing latency in seconds')
 error_count = Counter('rig_processing_errors_total', 'Total number of processing errors')
-consumer_lag = Gauge('rig_consumer_lag', 'Consumer lag per partition')
+consumer_lag = Gauge('rig_consumer_lag', 'Consumer lag per partition', ['partition'])  # Add 'partition' as a label
 critical_alerts = Counter('rig_critical_alerts_total', 'Total number of critical alerts')
+
+# Add a helper function to safely process messages with both alert formats
+def process_message_json(message_json):
+    try:
+        # Parse the JSON message
+        message_data = json.loads(message_json)
+        
+        # Handle alerts field - ensure it's a dictionary with 'items' key
+        alerts = message_data.get("alerts", {})
+        
+        # If alerts is still a list from old format messages, convert it
+        if isinstance(alerts, list):
+            alerts = {"items": alerts}
+            message_data["alerts"] = alerts
+        
+        return message_data
+    except Exception as e:
+        logger.error(f"Error processing message: {str(e)}")
+        logger.error(f"Message sent to DLQ: {message_json}")
+        # Handle sending to DLQ
+        return None
 
 class RigDataConsumer:
     def __init__(self):
@@ -72,39 +99,36 @@ class RigDataConsumer:
         """Process a single message from a rig."""
         try:
             # Extract key metrics
-            rig_id = message.get('rig_id')
+            rig_id = message.get('rigId')  # Changed from rig_id to rigId to match producer format
             timestamp = message.get('timestamp')
             
-            # Check for critical alerts
-            if 'alerts' in message and message['alerts']['level'] == 'critical':
-                critical_alerts.inc()
-                logger.warning(f"Critical alert from rig {rig_id}: {message['alerts']['message']}")
+            # Check for critical alerts using the new structure
+            if 'alerts' in message:
+                alert_items = message['alerts'].get('items', [])
+                for alert in alert_items:
+                    if alert.get('severity') == 'CRITICAL':  # Changed from 'level' == 'critical' to match producer format
+                        critical_alerts.inc()
+                        logger.warning(f"Critical alert from rig {rig_id}: {alert.get('message')}")
+            
+            # Process measurements
+            measurements = message.get('measurements', {})
             
             # Process pressure metrics
-            pressure = message.get('pressure', {})
-            if pressure.get('status') == 'warning':
-                logger.warning(f"Pressure warning from rig {rig_id}: {pressure['value']} {pressure['unit']}")
+            pressure = measurements.get('pressure')
+            if pressure and pressure > 4500:  # Example threshold
+                logger.warning(f"Pressure warning from rig {rig_id}: {pressure}")
             
             # Process temperature metrics
-            temperature = message.get('temperature', {})
-            if temperature.get('status') == 'warning':
-                logger.warning(f"Temperature warning from rig {rig_id}: {temperature['value']} {temperature['unit']}")
-            
-            # Process equipment status
-            equipment_status = message.get('equipment_status', {})
-            if equipment_status.get('safety_system') == 'critical':
-                logger.error(f"Critical safety system status from rig {rig_id}")
-            
-            # Process maintenance metrics
-            maintenance = message.get('maintenance_metrics', {})
-            if maintenance.get('maintenance_due'):
-                logger.warning(f"Maintenance due for rig {rig_id}")
+            temperature = measurements.get('temperature')
+            if temperature and temperature > 140:  # Example threshold
+                logger.warning(f"Temperature warning from rig {rig_id}: {temperature}")
             
             # Update consumer lag metrics
             for topic_partition in self.consumer.assignment():
                 lag = self.consumer.end_offsets([topic_partition])[topic_partition] - \
                       self.consumer.position(topic_partition)
-                consumer_lag.labels(partition=topic_partition.partition).set(lag)
+                # Convert partition to string to ensure compatibility
+                consumer_lag.labels(partition=str(topic_partition.partition)).set(lag)
             
             messages_processed.inc()
             
@@ -116,9 +140,9 @@ class RigDataConsumer:
     def handle_error(self, message: Dict[str, Any]) -> None:
         """Handle processing errors by sending to dead letter queue."""
         try:
-            # In a real implementation, you would send to a dead letter queue
-            # For this POC, we'll just log the error
-            logger.error(f"Message sent to DLQ: {json.dumps(message)}")
+            # Convert the message to a JSON string to ensure it can be serialized
+            message_json = json.dumps(message) if not isinstance(message, str) else message
+            logger.error(f"Message sent to DLQ: {message_json}")
         except Exception as e:
             logger.error(f"Error handling failed message: {str(e)}")
     
@@ -127,8 +151,10 @@ class RigDataConsumer:
         futures = []
         for message in messages:
             try:
-                data = json.loads(message.value.decode('utf-8'))
-                futures.append(self.executor.submit(self.process_message, data))
+                # Use the helper function to process the JSON message
+                data = process_message_json(message.value.decode('utf-8'))
+                if data:  # Only process if valid data was returned
+                    futures.append(self.executor.submit(self.process_message, data))
             except Exception as e:
                 error_count.inc()
                 logger.error(f"Error decoding message: {str(e)}")
@@ -141,8 +167,8 @@ class RigDataConsumer:
         """Start the consumer and begin processing messages."""
         logger.info("Starting Rig Data Consumer...")
         
-        # Start Prometheus metrics server
-        start_http_server(9091)  # Different port from producer
+        # Remove the duplicate metrics server start - it's now handled in main()
+        # start_http_server(9091)  # Different port from producer
         
         try:
             while True:
@@ -170,8 +196,37 @@ class RigDataConsumer:
         self.executor.shutdown()
 
 def main():
+    # Support command-line arguments for consumer instance identification
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Run rig data consumer')
+    parser.add_argument('--instance', type=int, default=0, help='Consumer instance ID')
+    parser.add_argument('--instances', type=int, default=1, help='Total number of consumer instances')
+    args = parser.parse_args()
+    
+    # Use the instance ID to create a unique consumer group or for metrics port
+    instance_num = args.instance
+    total_instances = args.instances
+    
+    if total_instances < 1 or instance_num >= total_instances:
+        logger.error(f"Invalid instance configuration: instance={instance_num}, instances={total_instances}")
+        return
+    
+    # Log consumer instance information
+    logger.info(f"Starting consumer instance {instance_num+1} of {total_instances}")
+    logger.info(f"Consumer group: {CONSUMER_GROUP_ID}")
+    logger.info(f"Thread pool size: {CONSUMER_THREAD_POOL_SIZE}")
+    
+    # Start the consumer
     consumer = RigDataConsumer()
+    
+    # Use different ports for Prometheus metrics for each instance
+    metrics_port = 9091 + instance_num
     try:
+        # Start Prometheus metrics server on a unique port
+        start_http_server(metrics_port)
+        logger.info(f"Started metrics server on port {metrics_port}")
+        
         consumer.start()
     except KeyboardInterrupt:
         logger.info("Shutting down consumer...")
@@ -179,4 +234,4 @@ def main():
         consumer.close()
 
 if __name__ == "__main__":
-    main() 
+    main()

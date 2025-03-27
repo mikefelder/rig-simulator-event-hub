@@ -1,113 +1,74 @@
 """
-Rig data simulator that generates realistic oil rig metrics.
+Simulates oil rig telemetry data for testing and development.
 """
-import time
-import random
 import json
+import random
+import time
+import uuid
 from datetime import datetime
-import numpy as np
 from typing import Dict, Any
 
 class RigSimulator:
+    """Simulates an oil rig sending telemetry data."""
+    
+    OPERATIONAL_STATUSES = ["DRILLING", "OPERATIONAL", "STANDBY", "MAINTENANCE"]
+    
     def __init__(self, rig_id: str):
+        """Initialize a rig simulator with the given ID."""
         self.rig_id = rig_id
-        self.base_pressure = random.uniform(2000, 3000)  # Base pressure in PSI
-        self.base_temperature = random.uniform(150, 200)  # Base temperature in °F
-        self.base_flow_rate = random.uniform(100, 200)    # Base flow rate in bbl/day
-        self.latitude = random.uniform(-90, 90)
-        self.longitude = random.uniform(-180, 180)
+        # Generate a semi-stable location for this rig
+        self.latitude = random.uniform(25.0, 36.0)  # Gulf of Mexico region
+        self.longitude = random.uniform(-100.0, -80.0)
         
-    def generate_metrics(self) -> Dict[str, Any]:
-        """Generate realistic rig metrics with some random variation."""
-        timestamp = datetime.utcnow().isoformat()
+    def _generate_measurements(self) -> Dict[str, float]:
+        """Generate random measurements for the rig."""
+        return {
+            "depth": random.uniform(1000, 5000),
+            "weight_on_bit": random.uniform(10, 50),
+            "rotary_speed": random.uniform(80, 200),
+            "rate_of_penetration": random.uniform(10, 50),
+            "torque": random.uniform(500, 2000),
+            "pressure": random.uniform(2000, 5000),
+            "temperature": random.uniform(60, 150),
+            "mud_flow_rate": random.uniform(500, 2000)
+        }
+    
+    def _generate_alerts(self) -> Dict[str, Any]:
+        """Generate alerts as a dictionary instead of a list."""
+        # Usually no alerts (80% of the time)
+        if random.random() > 0.2:
+            return {"items": []}
+            
+        severity = random.choice(["WARNING", "CRITICAL"])
+        message = random.choice([
+            "Pressure exceeding threshold",
+            "Temperature too high",
+            "Flow rate below minimum",
+            "Torque fluctuation detected"
+        ])
         
-        # Generate base metrics with realistic variations
-        pressure = self.base_pressure + random.gauss(0, 50)
-        temperature = self.base_temperature + random.gauss(0, 5)
-        flow_rate = self.base_flow_rate + random.gauss(0, 10)
-        
-        # Generate equipment status
-        equipment_status = {
-            "pump_status": random.choice(["running", "idle", "maintenance"]),
-            "safety_system": random.choice(["active", "warning", "critical"]),
-            "power_status": random.choice(["normal", "backup", "critical"]),
-            "communication_status": random.choice(["excellent", "good", "fair", "poor"])
+        alert = {
+            "alertId": str(uuid.uuid4()),
+            "severity": severity,
+            "message": message,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
         }
         
-        # Generate sensor readings
-        sensor_readings = {
-            "vibration": random.uniform(0, 5),
-            "noise_level": random.uniform(60, 90),
-            "emissions": random.uniform(0, 100),
-            "fluid_level": random.uniform(80, 100)
-        }
-        
-        # Generate maintenance metrics
-        maintenance_metrics = {
-            "hours_since_last_maintenance": random.uniform(0, 168),
-            "maintenance_due": random.choice([True, False]),
-            "parts_wear_level": random.uniform(0, 100)
-        }
-        
-        # Generate environmental conditions
-        environmental = {
-            "wind_speed": random.uniform(0, 30),
-            "wave_height": random.uniform(0, 5),
-            "visibility": random.uniform(0, 10),
-            "sea_temperature": random.uniform(40, 80)
-        }
-        
-        # Combine all metrics
-        metrics = {
-            "rig_id": self.rig_id,
-            "timestamp": timestamp,
-            "location": {
-                "latitude": self.latitude + random.gauss(0, 0.0001),
-                "longitude": self.longitude + random.gauss(0, 0.0001),
-                "depth": random.uniform(100, 5000)
-            },
-            "pressure": {
-                "value": pressure,
-                "unit": "PSI",
-                "status": "normal" if abs(pressure - self.base_pressure) < 100 else "warning"
-            },
-            "temperature": {
-                "value": temperature,
-                "unit": "°F",
-                "status": "normal" if abs(temperature - self.base_temperature) < 20 else "warning"
-            },
-            "flow_rate": {
-                "value": flow_rate,
-                "unit": "bbl/day",
-                "status": "normal" if abs(flow_rate - self.base_flow_rate) < 20 else "warning"
-            },
-            "equipment_status": equipment_status,
-            "sensor_readings": sensor_readings,
-            "maintenance_metrics": maintenance_metrics,
-            "environmental": environmental,
-            "safety_metrics": {
-                "gas_levels": random.uniform(0, 100),
-                "pressure_variance": random.uniform(0, 10),
-                "emergency_systems_status": "active"
-            }
-        }
-        
-        # Add random alerts if conditions are critical
-        if any([
-            abs(pressure - self.base_pressure) > 200,
-            abs(temperature - self.base_temperature) > 40,
-            equipment_status["safety_system"] == "critical",
-            maintenance_metrics["parts_wear_level"] > 90
-        ]):
-            metrics["alerts"] = {
-                "level": "critical",
-                "message": "Critical condition detected",
-                "timestamp": timestamp
-            }
-        
-        return metrics
+        # Return alerts as a dictionary with 'items' key containing the list
+        return {"items": [alert]}
     
     def generate_message(self) -> str:
-        """Generate a JSON message with the current metrics."""
-        metrics = self.generate_metrics()
-        return json.dumps(metrics) 
+        """Generate a complete message from this rig."""
+        message = {
+            "messageId": str(uuid.uuid4()),
+            "rigId": self.rig_id,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "operationalStatus": random.choice(self.OPERATIONAL_STATUSES),
+            "location": {
+                "latitude": self.latitude + random.uniform(-0.001, 0.001),
+                "longitude": self.longitude + random.uniform(-0.001, 0.001)
+            },
+            "measurements": self._generate_measurements(),
+            "alerts": self._generate_alerts()  # Now returns a dictionary with 'items' key
+        }
+        return json.dumps(message)
