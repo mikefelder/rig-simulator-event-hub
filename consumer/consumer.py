@@ -7,7 +7,8 @@ import time
 import sys
 import os
 from typing import Dict, Any
-from kafka import KafkaConsumer
+from kafka import KafkaConsumer, TopicPartition
+from kafka.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
 from concurrent.futures import ThreadPoolExecutor
 
@@ -73,27 +74,58 @@ def process_message_json(message_json):
         return None
 
 class RigDataConsumer:
-    def __init__(self):
-        # Create consumer
+    def __init__(self, consumer_id=None, instance_num=0, total_instances=1):
+        """Initialize with explicit partition assignment."""
+        self.instance_num = instance_num
+        self.total_instances = total_instances
+        
+        # Calculate which partitions this instance should handle
+        all_partitions = list(range(64))  # Assuming 64 partitions as per config
+        partitions_per_instance = len(all_partitions) // total_instances
+        
+        # Assign partitions deterministically
+        start_idx = instance_num * partitions_per_instance
+        end_idx = start_idx + partitions_per_instance if instance_num < total_instances - 1 else len(all_partitions)
+        self.assigned_partitions = all_partitions[start_idx:end_idx]
+        
+        logger.info(f"Assigned partitions: {self.assigned_partitions}")
+        logger.info(f"Total assigned partitions: {len(self.assigned_partitions)}")
+        
+        # Create consumer with fixed partition assignment
         self.consumer = KafkaConsumer(
-            TOPIC_NAME,
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             security_protocol=KAFKA_SECURITY_PROTOCOL,
             sasl_mechanism=KAFKA_SASL_MECHANISM,
             sasl_plain_username=KAFKA_SASL_USERNAME,
             sasl_plain_password=KAFKA_SASL_PASSWORD,
-            group_id=CONSUMER_GROUP_ID,
+            group_id=f"{CONSUMER_GROUP_ID}-{instance_num}", # Use different group for each instance
+            client_id=consumer_id,
             auto_offset_reset=CONSUMER_AUTO_OFFSET_RESET,
             enable_auto_commit=CONSUMER_ENABLE_AUTO_COMMIT,
             max_poll_records=CONSUMER_MAX_POLL_RECORDS,
+            fetch_max_wait_ms=500,  # Reduced wait time for fetching messages
+            max_partition_fetch_bytes=1048576,  # Increase max bytes fetched per partition (1MB)
             session_timeout_ms=CONSUMER_SESSION_TIMEOUT_MS,
             heartbeat_interval_ms=CONSUMER_HEARTBEAT_INTERVAL_MS,
             fetch_min_bytes=CONSUMER_FETCH_MIN_BYTES,
             fetch_max_bytes=CONSUMER_FETCH_MAX_BYTES
         )
         
+        # Explicitly assign partitions instead of subscribing to the topic
+        topic_partitions = [TopicPartition(TOPIC_NAME, p) for p in self.assigned_partitions]
+        self.consumer.assign(topic_partitions)
+        
         # Thread pool for parallel message processing
         self.executor = ThreadPoolExecutor(max_workers=CONSUMER_THREAD_POOL_SIZE)
+    
+    def log_partition_assignments(self):
+        """Log the partitions assigned to this consumer."""
+        # Wait for partition assignment
+        time.sleep(5)  # Give the consumer a moment to get assignments
+        partitions = self.consumer.assignment()
+        partition_ids = [p.partition for p in partitions]
+        logger.info(f"Assigned partitions: {sorted(partition_ids)}")
+        logger.info(f"Total assigned partitions: {len(partition_ids)}")
         
     def process_message(self, message: Dict[str, Any]) -> None:
         """Process a single message from a rig."""
@@ -148,20 +180,26 @@ class RigDataConsumer:
     
     def process_batch(self, messages) -> None:
         """Process a batch of messages in parallel."""
-        futures = []
+        # Optimize by pre-processing the batch before submitting to thread pool
+        message_data_list = []
         for message in messages:
             try:
                 # Use the helper function to process the JSON message
                 data = process_message_json(message.value.decode('utf-8'))
                 if data:  # Only process if valid data was returned
-                    futures.append(self.executor.submit(self.process_message, data))
+                    message_data_list.append(data)
             except Exception as e:
                 error_count.inc()
                 logger.error(f"Error decoding message: {str(e)}")
         
-        # Wait for all messages in batch to be processed
-        for future in futures:
-            future.result()
+        # Process messages in chunks to reduce overhead
+        chunk_size = 10  # Process messages in batches of 10
+        for i in range(0, len(message_data_list), chunk_size):
+            chunk = message_data_list[i:i+chunk_size]
+            futures = [self.executor.submit(self.process_message, data) for data in chunk]
+            # Wait for all messages in chunk to be processed
+            for future in futures:
+                future.result()
     
     def start(self) -> None:
         """Start the consumer and begin processing messages."""
@@ -202,6 +240,7 @@ def main():
     parser = argparse.ArgumentParser(description='Run rig data consumer')
     parser.add_argument('--instance', type=int, default=0, help='Consumer instance ID')
     parser.add_argument('--instances', type=int, default=1, help='Total number of consumer instances')
+    parser.add_argument('--consumer-id', type=str, default=None, help='Unique consumer ID (auto-generated if not provided)')
     args = parser.parse_args()
     
     # Use the instance ID to create a unique consumer group or for metrics port
@@ -212,21 +251,35 @@ def main():
         logger.error(f"Invalid instance configuration: instance={instance_num}, instances={total_instances}")
         return
     
+    # Create unique consumer ID for better partition distribution
+    import uuid
+    consumer_id = args.consumer_id or f"consumer-{instance_num}-{uuid.uuid4().hex[:8]}"
+    
     # Log consumer instance information
     logger.info(f"Starting consumer instance {instance_num+1} of {total_instances}")
     logger.info(f"Consumer group: {CONSUMER_GROUP_ID}")
+    logger.info(f"Consumer ID: {consumer_id}")
     logger.info(f"Thread pool size: {CONSUMER_THREAD_POOL_SIZE}")
-    
-    # Start the consumer
-    consumer = RigDataConsumer()
     
     # Use different ports for Prometheus metrics for each instance
     metrics_port = 9091 + instance_num
     try:
+        # Give some time between consumer starts to help with group coordination
+        logger.info(f"Waiting {instance_num * 2} seconds before joining consumer group...")
+        time.sleep(instance_num * 2)  # Stagger the startup to help with coordination
+        
         # Start Prometheus metrics server on a unique port
         start_http_server(metrics_port)
         logger.info(f"Started metrics server on port {metrics_port}")
         
+        # Start the consumer with instance information
+        consumer = RigDataConsumer(
+            consumer_id=consumer_id, 
+            instance_num=instance_num, 
+            total_instances=total_instances
+        )
+        
+        # Now start processing
         consumer.start()
     except KeyboardInterrupt:
         logger.info("Shutting down consumer...")

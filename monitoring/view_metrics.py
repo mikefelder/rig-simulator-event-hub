@@ -53,6 +53,19 @@ def parse_lag_metrics(metrics_text):
     
     return lag_metrics
 
+def parse_partition_assignments(metrics_text):
+    """Extract partition assignments from the metrics output."""
+    assigned_partitions = set()
+    # Pattern to match partition assignments: rig_consumer_lag{partition="X"} Y
+    pattern = r'rig_consumer_lag\{partition="(\d+)"\}\s+[\d\.]+'
+    
+    for line in metrics_text.split('\n'):
+        for match in re.finditer(pattern, line):
+            partition = match.group(1)
+            assigned_partitions.add(partition)
+    
+    return sorted(list(assigned_partitions), key=int)
+
 def display_metrics(producer_port=9090, consumer_ports=None, show_lag=False):
     """Display key metrics from producer and consumer instances."""
     if consumer_ports is None:
@@ -82,12 +95,17 @@ def display_metrics(producer_port=9090, consumer_ports=None, show_lag=False):
                     'rig_critical_alerts_total'
                 ])
                 
+                # Get assigned partitions
+                assigned_partitions = parse_partition_assignments(consumer_metrics_text)
+                active_partitions = len(assigned_partitions)
+                
                 row = [
                     f"Consumer {i}",
                     port,
                     consumer_metrics.get('rig_messages_processed_total', 'N/A'),
                     consumer_metrics.get('rig_processing_errors_total', 'N/A'),
-                    consumer_metrics.get('rig_critical_alerts_total', 'N/A')
+                    consumer_metrics.get('rig_critical_alerts_total', 'N/A'),
+                    active_partitions
                 ]
                 
                 # Calculate total lag across all partitions for this consumer
@@ -98,16 +116,30 @@ def display_metrics(producer_port=9090, consumer_ports=None, show_lag=False):
                 
                 table_data.append(row)
             else:
-                row = [f"Consumer {i}", port, "Error", "Error", "Error"]
+                row = [f"Consumer {i}", port, "Error", "Error", "Error", "Error"]
                 if show_lag:
                     row.append("Error")
                 table_data.append(row)
         
-        headers = ["Instance", "Port", "Messages Processed", "Errors", "Critical Alerts"]
+        headers = ["Instance", "Port", "Messages Processed", "Errors", "Critical Alerts", "Active Partitions"]
         if show_lag:
             headers.append("Total Lag")
         
         print(tabulate(table_data, headers=headers))
+        
+        # Display partition assignments for each consumer
+        print("\nPartition Assignments:")
+        for i, port in enumerate(consumer_ports):
+            consumer_metrics_text = get_metrics(port)
+            if "Error" not in consumer_metrics_text:
+                assigned_partitions = parse_partition_assignments(consumer_metrics_text)
+                if assigned_partitions:
+                    partition_chunks = [assigned_partitions[j:j+10] for j in range(0, len(assigned_partitions), 10)]
+                    print(f"\nConsumer {i} (Port {port}) - {len(assigned_partitions)} partitions:")
+                    for chunk in partition_chunks:
+                        print("  " + ", ".join(chunk))
+                else:
+                    print(f"\nConsumer {i} (Port {port}): No partitions assigned")
         
         # Display detailed lag per partition if requested
         if show_lag:

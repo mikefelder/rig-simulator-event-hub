@@ -110,7 +110,7 @@ class RigDataProducer:
             logger.error(f"Error sending message for rig {rig_id}: {str(e)}")
             # Try to reconnect if connection is lost
             try:
-                self.producer.flush(timeout_ms=10000)
+                self.producer.flush(timeout=10)
                 logger.info("Successfully reconnected to Kafka")
             except Exception as flush_error:
                 logger.error(f"Failed to reconnect to Kafka: {str(flush_error)}")
@@ -130,8 +130,16 @@ class RigDataProducer:
         """Start the producer and all rig simulators."""
         logger.info("Starting Rig Data Producer...")
         
-        # Start Prometheus metrics server
-        start_http_server(9090)
+        # Calculate a unique port for each instance using a different range (9100, 9101, 9102, etc.)
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--instance', type=int, default=0)
+        args, _ = parser.parse_known_args()
+        metrics_port = 9100 + args.instance  # Changed from 9090 to 9100 to avoid conflict with consumers
+        
+        # Start Prometheus metrics server with unique port
+        logger.info(f"Starting Prometheus metrics server on port {metrics_port}")
+        start_http_server(metrics_port)
         
         # Start all rigs in parallel
         futures = [
@@ -146,7 +154,8 @@ class RigDataProducer:
     def close(self) -> None:
         """Close the producer and thread pool."""
         try:
-            self.producer.flush(timeout_ms=10000)
+            # Use timeout parameter instead of timeout_ms
+            self.producer.flush(timeout=10)
             self.producer.close()
             self.executor.shutdown()
             logger.info("Producer closed successfully")
