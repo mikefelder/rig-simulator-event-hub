@@ -90,17 +90,18 @@ class RigDataProducer:
         self.executor = ThreadPoolExecutor(max_workers=min(PRODUCER_THREAD_POOL_SIZE, len(self.rigs)))
         
     def send_message(self, rig_id: str, message: str) -> None:
-        """Send a message to the Event Hub with partition key."""
+        """Send a message to the Event Hub with round-robin partitioning."""
         try:
             # Record message size
             message_size.observe(len(message))
             
-            # Send message with timing and partition key
+            # Send message with timing using round-robin partitioning (no key specified)
+            # This ensures messages are distributed evenly across all partitions
             with send_latency.time():
                 future = self.producer.send(
                     TOPIC_NAME,
-                    value=message.encode('utf-8'),
-                    key=rig_id.encode('utf-8')  # Use rig_id as partition key
+                    value=message.encode('utf-8')
+                    # No key parameter - this enables round-robin partitioning
                 )
                 future.get(timeout=30)  # Increased timeout to 30 seconds
                 messages_sent.inc()

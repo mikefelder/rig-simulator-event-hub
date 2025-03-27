@@ -21,6 +21,10 @@ All configuration settings are managed in `config/config.py`. Key settings inclu
 - `PRODUCER_THREAD_POOL_SIZE`: Maximum threads for the producer (default: 200)
 - `CONSUMER_THREAD_POOL_SIZE`: Maximum threads for message processing (default: 32)
 
+## Partitioning Strategy
+
+The producer uses a round-robin partitioning strategy to ensure even message distribution across all partitions. This prevents hot spots and ensures optimal throughput.
+
 ## Running Multiple Producer Instances
 
 For higher throughput, you can run multiple producer instances, each handling a subset of rigs.
@@ -58,7 +62,7 @@ python producer/producer.py --instance 3 --instances 4
 
 ## Running Multiple Consumer Instances
 
-Since the Event Hub has 64 partitions, you can run multiple consumer instances to improve throughput.
+Since the Event Hub has 64 partitions, you can run multiple consumer instances to improve throughput. Each consumer instance will automatically be assigned a subset of partitions.
 
 ### Basic Usage
 
@@ -70,7 +74,7 @@ python consumer/consumer.py
 
 ### Running Multiple Consumer Instances
 
-To run multiple consumer instances (each will automatically be assigned different partitions):
+To run multiple consumer instances:
 
 ```bash
 # Terminal 1 - First consumer instance
@@ -104,6 +108,7 @@ python consumer/consumer.py --instance 3 --instances 4
 
 - Best practice: Use 1 consumer instance per 16-32 partitions
 - With 64 partitions, 2-4 consumer instances is optimal
+- Each consumer instance gets its own subset of partitions
 - Add more consumer instances if processing lag builds up
 - All consumers in the same consumer group will automatically coordinate
 
@@ -198,12 +203,42 @@ To view the number of unprocessed messages (consumer lag) in Azure Event Hubs:
    - Access this at http://localhost:9091/metrics (or other consumer ports)
    - Use the view_metrics.py script with the `--show-lag` option (requires implementation)
 
+#### Using the Metrics Viewer
+
+For an easy way to monitor all instances:
+
+```bash
+# Monitor with lag metrics
+python monitoring/view_metrics.py --consumer-instances 4 --show-lag
+
+# Basic monitoring without lag details
+python monitoring/view_metrics.py --consumer-instances 4
+```
+
 ## Troubleshooting
 
 - Check logs for connection issues or errors
 - Verify that the expected number of messages are being produced/consumed
 - Use the `troubleshoot.py` script to analyze message distribution
 - If a consumer falls behind, consider adding more consumer instances
+
+## Troubleshooting Partition Issues
+
+If you notice uneven processing or high lag on certain partitions, you can use the rebalance tool:
+
+```bash
+# View partition information
+python monitoring/rebalance_tool.py info
+
+# Analyze messages in a specific partition
+python monitoring/rebalance_tool.py analyze 6 --sample 10
+
+# Reset consumer offsets (to skip all existing messages)
+python monitoring/rebalance_tool.py reset
+
+# Reset consumer offsets to beginning (to reprocess all messages)
+python monitoring/rebalance_tool.py reset --to-beginning
+```
 
 ## Message Format
 
@@ -240,4 +275,4 @@ Each simulated rig generates messages with the following structure:
     ]
   }
 }
-````
+```
